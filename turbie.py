@@ -8,9 +8,10 @@
 "Check for NBs before handing in"
 
 
-#Variables that needs to come from the function
+#Variables that needs to come from the function - What we should be looping over
 V = 20 # Wind speed: V(m/s)
 TI_cat = 0.1 #TI category = 0.1, 0.05 or 0.15
+t = 0.010
 
 #Import relevating packages
 import numpy as np
@@ -20,6 +21,19 @@ from scipy.integrate import solve_ivp
 import matplotlib.pyplot as plt
 
 "NB: LOAD THE DATA IS AS DATA INSTEAD OF TEXT"
+
+"I need to loop over the different files using f-string to load and save the results"
+"""for ws in [3, 4, 5]:
+     file_name = f"results_for_ws_{ws}.txt"
+     print(file_name) """
+
+"""We need the forloop to run the simulation looping over different wind speeds"""
+
+"""I need to use the cypy function to solve this problem"""
+
+"""We have to simulate for each of the wind farms / data set"""
+
+### IMPORTING DATASETS
 
 # We import the Turbie parameters used in the function: 
 with open('turbie_parameters.txt', 'rt') as t_parameters:
@@ -37,6 +51,14 @@ with open('turbie_parameters.txt', 'rt') as t_parameters:
     t_parameters.closed
 True
 
+# We import the Turbie parameters used in the function: 
+ct_df = pd.read_csv('CT.txt', sep='\t')
+
+#We look up the wind profile based on TI and wind, and load it into the wind data frame
+wind_df = pd.read_csv(f'wind_files/wind_TI_{TI_cat}/wind_{V}_ms_TI_{TI_cat}.txt', sep='\t')
+
+## DEFINE AND BUILD THE M, C, AND K MATRICES
+
 # We define m1(mass of the three blades) and m2(combined effects of the nacelle, hub and tower)
 m1 = 3*m_blade
 m2 = m_nacelle + m_hub + m_tower
@@ -46,39 +68,67 @@ M = np.array([[m1, 0],[0, m2]])
 C = np.array([[c1, -c1],[-c1, c1 + c2]])
 K = np.array([[k1, -k1],[-k1, k1 + k2]])
 
-# We import the Turbie parameters used in the function: 
-ct_df = pd.read_csv('CT.txt', sep='\t')
+### BUILD A FUNCTION TO DETERMINE Y'(T)
 
-#We look-up Ct from the user input wind speed
-Ct = ct_df[ct_df['# V(m/s)'] == V]['CT'].values[0]
-
-#We estimate the the Swept Area A
+## Define aerodynamic parameter not defined in parameters dataset
 radius = D_rotor/2
-A = radius**2*math.pi
+SW_A = radius**2*math.pi #Swept Area
+C_t = ct_df[ct_df['# V(m/s)'] == V]['CT'].values[0] #We look-up Ct from the user input wind speed
+u_t = wind_df[wind_df['Time(s)'] == 0.01]['V(m/s)'].values[0]
 
-# We define number of freedom
-N = 2
+## Set up function to determine y'(t)
+def y_2dof(t, y, M, C, K):
+    x1, x2, x1_dot, x2_dot = y
+    
+    # Aerodynamic force on mass 1
+    v_rel = u_t - x1_dot
+    f_aero = 1/2 * rho * C_t * SW_A * v_rel * abs(v_rel)
+    # No external force on mass 2
+    f_2 = 0
+        
+    # Current positions and velocities
+    x = np.array([x1, x2])
+    x_dot = np.array([x1_dot, x2_dot])
+    F_t = np.array([f_aero, f_2])
+    
+    # Accelerations: M*ddot{x} + C*dot{x} + K*x = F  =>  ddot{x} = M^-1*(F - C*dot{x} - K*x)
+    x_ddot = np.linalg.inv(M) @ (F_t - C @ x_dot - K @ x)
 
-#We look up the wind profile based on TI and wind, and load it into the wind data frame
-wind_df = pd.read_csv(f'wind_files/wind_TI_{TI_cat}/wind_{V}_ms_TI_{TI_cat}.txt', sep='\t')
-print(wind_df)
+    ## We define parameters to define y'(t)
+    N = 2 # Number of freedom
 
-#We define the system martrix (vector A)
-ZeroN = np.zeros((N, N))
-I = np.eye(N)
-Minv = np.linalg.inv(M)
+    ZeroN = np.zeros((N, N))
+    I = np.eye(N)
+    Minv = np.linalg.inv(M)
 
-A = np.array([[ZeroN, I], [-Minv@K, -Minv@C]])
+    #We define the system martrix (vector A) and input matrix (vector B)
+    A = np.block([[ZeroN, I], [-Minv@K, -Minv@C]])
+    B = np.block([0],-Minv@F_t)
 
-print(A)
+    y_prime = A@y + B
+    
+    return [x1_dot, x2_dot, x_ddot[0], x_ddot[1]]
+
+# We set the timespan
+t_span = (0, 100) #659.990
+t_eval = np.linspace(*t_span, 100) #66000
+
+# We set initial conditions for y'(t)
+y0 = [0,0,0,0]
+
+res = solve_ivp(y_2dof, t_span, y0, t_eval=t_eval, args=(M,C,K))
+
+#Plot the results: 
+import matplotlib.pyplot as plt
+plt.plot(res.t, res.y[0], label='x1 (mass 1)')
+plt.plot(res.t, res.y[1], label='x2 (mass 2)')
+plt.xlabel('Time (s)')
+plt.ylabel('Displacement (m)')
+plt.title('2-DOF Mass-Spring-Damper with Aerodynamic Force')
+plt.legend()
+plt.grid(True)
+plt.show()
 
 
 
-
-# We define the aerodynamic forcing on the blades: 
-f_aero = 1/2*rho*Ct*A
-print(f_aero)
-
-# We define the forcing vector F(t)
-Ft = np.array([[f_aero],[0]])
 
